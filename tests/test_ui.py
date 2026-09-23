@@ -1,14 +1,14 @@
 from decimal import Decimal
 
 import pytest
-from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QMouseEvent
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import QImage, QMouseEvent, QPainter
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QDialog
 
 from crypto_widget.config import DEFAULT_CONFIG, SettingsStore
 from crypto_widget.settings import SettingsDialog
-from crypto_widget.visuals import Quote, ticker_size
+from crypto_widget.visuals import Quote, draw_ticker, ticker_size
 from crypto_widget.widget import CryptoWidget
 
 
@@ -25,6 +25,9 @@ class StubClient(QObject):
 
     def set_source(self, source):
         self.source = source
+
+    def set_proxy(self, config):
+        self.proxy_config = {key: value for key, value in config.items() if key.startswith("proxy_")}
 
     def cancel(self, kind):
         self.cancelled.append(kind)
@@ -175,6 +178,15 @@ def test_mini_switch_preserves_quotes_and_saved_preference(widget):
     widget._price_ready("BTCUSDT", None, "网络请求失败")
     assert "保留上次价格" in widget.toolTip()
     assert "BTCUSDT" in widget.toolTip()
+
+
+def test_transparent_mini_background_remains_mouse_hit_target():
+    image = QImage(100, 28, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
+    draw_ticker(painter, QRectF(0, 0, 100, 28), Quote("BTCUSDT"), 2, 12, 0, mini=True)
+    painter.end()
+    assert image.pixelColor(45, 3).alpha() > 0
 
 
 def test_mini_preview_cancel_and_full_font_restoration(widget):
@@ -371,4 +383,34 @@ def test_startup_read_failure_allows_other_settings_to_save(widget):
     dialog._save()
     assert dialog.result() == QDialog.DialogCode.Accepted
     assert not registry.writes
+    dialog.deleteLater()
+
+
+def test_proxy_draft_validation_save_and_disable(widget):
+    dialog = SettingsDialog(widget)
+    assert dialog.proxy_check.isChecked()
+    assert dialog.proxy_type_combo.currentData() == "socks5"
+    assert dialog.proxy_host_edit.text() == "127.0.0.1"
+    assert dialog.proxy_port_spin.value() == 7897
+    dialog.proxy_host_edit.setText("socks5://127.0.0.1:7897")
+    dialog._save()
+    assert "代理主机地址无效" in dialog.feedback.text()
+    assert not widget.store.path.exists()
+    dialog.proxy_host_edit.setText(" localhost ")
+    dialog.proxy_port_spin.setValue(1080)
+    dialog.proxy_type_combo.setCurrentIndex(dialog.proxy_type_combo.findData("http"))
+    assert widget.client.proxy_config["proxy_port"] == 7897
+    dialog._save()
+    assert widget.store.load()["proxy_host"] == "localhost"
+    assert widget.client.proxy_config["proxy_port"] == 1080
+    assert widget.client.proxy_config["proxy_type"] == "http"
+    dialog.deleteLater()
+    dialog = SettingsDialog(widget)
+    dialog.proxy_check.setChecked(False)
+    assert not dialog.proxy_host_edit.isEnabled()
+    dialog.reject()
+    assert widget.config["proxy_enabled"] is True
+    dialog._save()
+    assert widget.store.load()["proxy_enabled"] is False
+    assert widget.client.proxy_config["proxy_enabled"] is False
     dialog.deleteLater()

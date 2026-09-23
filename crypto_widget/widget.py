@@ -68,6 +68,7 @@ class CryptoWidget(QWidget):
         return [self.config[f"decimals{i}"] for i in range(1, 4)]
 
     def apply_settings(self, config, request=True):
+        self.client.set_proxy(config)
         self.client.cancel("price")
         self.client.set_source(config.get("price_source", "auto"))
         self.animation.stop()

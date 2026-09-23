@@ -54,10 +54,10 @@ def snap_point(painter, x, y):
     return inverse.map(QPointF(round(physical.x()), round(physical.y())))
 
 
-def draw_price(painter, rect, text):
+def draw_price(painter, rect, text, *, align_left=False):
     metrics = QFontMetricsF(painter.font(), painter.device())
     baseline = rect.center().y() + (metrics.ascent() - metrics.descent()) / 2
-    x = rect.right() - price_text_width(text, metrics)
+    x = rect.left() if align_left else rect.right() - price_text_width(text, metrics)
     if not text or not all(char in "0123456789,." for char in text):
         painter.drawText(snap_point(painter, x, baseline), text)
         return
@@ -119,7 +119,7 @@ def ticker_size(quotes, decimals, size, mini=False, device=None):
         for quote, precision in zip(quotes, decimals):
             price_width = max(price_text_width(quote.price_text(precision), metrics),
                               price_text_width(f"88,888.{('8' * precision)}" if precision else "88,888", metrics))
-            width = max(width, 8 + 16 + 6 + price_width + 18)
+            width = max(width, 8 + 16 + 4 + price_width + 18)
         return math.ceil(width + 1), 28
     main = QFontMetricsF(font(size, True, latin=True), device)
     small = QFontMetricsF(font(11), device)
@@ -127,7 +127,7 @@ def ticker_size(quotes, decimals, size, mini=False, device=None):
     icon = max(30, size * 1.5)
     for quote, precision in zip(quotes, decimals):
         base, counter = split_symbol(quote.symbol)
-        left = max(main.horizontalAdvance(base), small.horizontalAdvance(f"现货 · {counter}"))
+        left = max(main.horizontalAdvance(base), small.horizontalAdvance(f"永续 · {counter}"))
         right = max(
             price_text_width(quote.price_text(precision), main),
             price_text_width(f"88,888.{('8' * precision)}" if precision else "88,888", main),
@@ -141,7 +141,8 @@ def draw_ticker(painter, rect, quote, precision, size, opacity, sample=False, mi
     painter.save()
     render_hints(painter)
     painter.setPen(QColor(148, 163, 184, max(35, int(opacity * 65))))
-    painter.setBrush(QColor(15, 23, 42, round(opacity * 255)))
+    # Windows 将分层窗口中 alpha 为 0 的像素视为可穿透，空白处便无法触发悬停提示。
+    painter.setBrush(QColor(15, 23, 42, max(1, round(opacity * 255))))
     radius = 7 if mini else 16
     painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
     if mini:
@@ -151,9 +152,9 @@ def draw_ticker(painter, rect, quote, precision, size, opacity, sample=False, mi
         icon_rect = QRectF(rect.x() + 8, rect.center().y() - 8, 16, 16)
         painter.drawPixmap(icon_rect, quote.icon, QRectF(quote.icon.rect()))
         painter.setFont(font(12, True, latin=True))
-        text_rect = QRectF(icon_rect.right() + 6, rect.y(), rect.width() - 48, rect.height())
+        text_rect = QRectF(icon_rect.right() + 4, rect.y(), rect.width() - 46, rect.height())
         painter.setPen(QColor("#fbbf24" if quote.error else "#f5f5f5"))
-        draw_price(painter, text_rect, quote.price_text(precision))
+        draw_price(painter, text_rect, quote.price_text(precision), align_left=True)
         if quote.error:
             painter.drawText(QRectF(rect.right() - 15, rect.y(), 9, rect.height()),
                              Qt.AlignmentFlag.AlignCenter, "!")
@@ -174,7 +175,7 @@ def draw_ticker(painter, rect, quote, precision, size, opacity, sample=False, mi
     painter.setFont(font(11))
     painter.setPen(QColor("#94a3b8"))
     painter.drawText(QRectF(left, top + size + 8, 220, 18), Qt.AlignmentFlag.AlignLeft,
-                     f"现货 · {counter}" if counter else "现货行情")
+                     f"永续 · {counter}" if counter else "永续合约行情")
     painter.setPen(QColor("#fbbf24" if quote.error else "#a5b4fc"))
     painter.drawText(QRectF(left, top + size + 8, rect.right() - left - 18, 18),
                      Qt.AlignmentFlag.AlignRight, "示例行情 · 仅供预览" if sample else quote.status_text())

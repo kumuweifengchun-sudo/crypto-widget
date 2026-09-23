@@ -74,3 +74,27 @@ def test_atomic_save_roundtrip(tmp_path):
     store.save(config)
     assert store.load() == config
     assert not list(store.path.parent.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("key,value", [
+    ("proxy_enabled", "false"), ("proxy_type", "https"), ("proxy_host", ""),
+    ("proxy_host", "http://localhost"), ("proxy_host", "localhost:7897"),
+    ("proxy_port", 0), ("proxy_port", 65536), ("proxy_port", True), ("proxy_port", "7897"),
+])
+def test_invalid_proxy_config_restores_defaults(key, value):
+    result, corrected = validate_config({key: value})
+    assert corrected == [key]
+    assert result[key] == DEFAULT_CONFIG[key]
+
+
+def test_proxy_config_legacy_defaults_and_roundtrip(tmp_path):
+    result, corrected = validate_config({"symbol1": "BTCUSDT"})
+    assert not corrected
+    assert result["proxy_enabled"] is True
+    assert (result["proxy_type"], result["proxy_host"], result["proxy_port"]) == ("socks5", "127.0.0.1", 7897)
+    store = SettingsStore(tmp_path / "proxy.json")
+    store.save({**result, "proxy_host": " ::1 ", "proxy_port": 1080, "proxy_enabled": False})
+    loaded = store.load()
+    assert loaded["proxy_host"] == "::1"
+    assert loaded["proxy_port"] == 1080
+    assert loaded["proxy_enabled"] is False

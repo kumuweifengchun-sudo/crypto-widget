@@ -5,10 +5,11 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QUrl, pyqtSignal
 from PyQt6.QtGui import QImage
-from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkProxy, QNetworkReply, QNetworkRequest
 
-from .config import ICON_CACHE_DIR, SOURCE_LABELS, normalize_symbol
+from .config import DEFAULT_CONFIG, ICON_CACHE_DIR, SOURCE_LABELS, normalize_symbol, validate_config
 from .providers import SOURCE_NAMES, SOURCE_ORDER, parse_price, parse_provider_price, price_url, split_symbol
+from .streaming import PriceStream
 
 
 @dataclass
@@ -22,7 +23,8 @@ class MarketClient(QObject):
     icon_ready = pyqtSignal(str, QImage)
     icons_finished = pyqtSignal(int, int)
 
-    def __init__(self, cache_dir=ICON_CACHE_DIR, parent=None, manager=None, source="auto"):
+    def __init__(self, cache_dir=ICON_CACHE_DIR, parent=None, manager=None, source="auto", streaming=True,
+                 stream_factory=PriceStream):
         super().__init__(parent)
         self.cache_dir = Path(cache_dir)
         self.manager = manager if manager is not None else QNetworkAccessManager(self)
@@ -33,7 +35,33 @@ class MarketClient(QObject):
         self.loading_icons = False
         self.price_jobs = {}
         self.source = "auto"
+        self.streaming = streaming
+        self.stream_factory = stream_factory
+        self.streams = {}
+        self.proxy = QNetworkProxy(QNetworkProxy.ProxyType.NoProxy)
+        self.proxy_config = None
+        self.set_proxy(DEFAULT_CONFIG)
         self.set_source(source)
+
+    def set_proxy(self, config):
+        normalized, corrected = validate_config(config)
+        if any(key.startswith("proxy_") for key in corrected):
+            raise ValueError("代理配置无效，请检查协议、主机地址和端口。")
+        proxy_config = {key: value for key, value in normalized.items() if key.startswith("proxy_")}
+        if proxy_config == self.proxy_config:
+            return
+        self.cancel("price")
+        self.cancel("icon")
+        if proxy_config["proxy_enabled"]:
+            kind = (QNetworkProxy.ProxyType.Socks5Proxy if proxy_config["proxy_type"] == "socks5"
+                    else QNetworkProxy.ProxyType.HttpProxy)
+            proxy = QNetworkProxy(kind, proxy_config["proxy_host"], proxy_config["proxy_port"])
+        else:
+            proxy = QNetworkProxy(QNetworkProxy.ProxyType.NoProxy)
+        self.manager.setProxy(proxy)
+        self.proxy = proxy
+        self.manager.clearConnectionCache()
+        self.proxy_config = proxy_config
 
     def _request(self, kind, symbol, url, provider=None):
         key = (kind, symbol)
@@ -57,10 +85,42 @@ class MarketClient(QObject):
     def refresh_prices(self, symbols):
         if self.closed:
             return
-        for symbol in dict.fromkeys(symbols):
-            symbol = normalize_symbol(symbol)
+        symbols = list(dict.fromkeys(normalize_symbol(symbol) for symbol in symbols))
+        for symbol in list(self.streams):
+            if symbol not in symbols:
+                stream = self.streams.pop(symbol)
+                stream.close()
+                stream.deleteLater()
+                self._cancel_price_job(symbol)
+        for symbol in symbols:
+            if self.streaming and symbol not in self.streams:
+                stream = self.stream_factory(symbol, self.source, self.proxy, parent=self)
+                self.streams[symbol] = stream
+                stream.price_ready.connect(self._stream_price)
+                stream.unavailable.connect(self._fallback_price)
+                stream.start()
+            self._fallback_price(symbol)
+
+    def _stream_healthy(self, symbol):
+        stream = self.streams.get(symbol)
+        return stream is not None and stream.healthy()
+
+    def _cancel_price_job(self, symbol):
+        self.price_jobs.pop(symbol, None)
+        reply = self.pending.pop(("price", symbol), None)
+        if reply is not None:
+            reply.abort()
+            reply.deleteLater()
+
+    def _stream_price(self, symbol, price, source):
+        if not self.closed and self._stream_healthy(symbol):
+            self._cancel_price_job(symbol)
+            self.price_ready.emit(symbol, price, "", source)
+
+    def _fallback_price(self, symbol):
+        if not self.closed and not self._stream_healthy(symbol):
             if symbol in self.price_jobs:
-                continue
+                return
             self.price_jobs[symbol] = PriceJob(list(SOURCE_ORDER) if self.source == "auto" else [self.source])
             self._next_price_source(symbol)
 
@@ -83,6 +143,10 @@ class MarketClient(QObject):
     def cancel(self, kind):
         self.generations[kind] += 1
         if kind == "price":
+            for stream in self.streams.values():
+                stream.close()
+                stream.deleteLater()
+            self.streams.clear()
             self.price_jobs.clear()
         for key, reply in list(self.pending.items()):
             if key[0] == kind:
@@ -123,6 +187,9 @@ class MarketClient(QObject):
             if self.closed or generation != self.generations[kind] or self.pending.get(key) is not reply:
                 return
             self.pending.pop(key)
+            if kind == "price" and self._stream_healthy(symbol):
+                self.price_jobs.pop(symbol, None)
+                return  # 已收到推送时，忽略较早发出的 HTTP 响应及错误。
             ok = reply.error() == QNetworkReply.NetworkError.NoError
             status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
             ok = ok and status == 200

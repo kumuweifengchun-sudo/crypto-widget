@@ -14,14 +14,14 @@ from crypto_widget.providers import SOURCE_ORDER
 
 
 def main():
-    parser = argparse.ArgumentParser(description="公开现货行情数据源连通性检查")
+    parser = argparse.ArgumentParser(description="公开永续合约行情数据源连通性检查")
     parser.add_argument("--source", choices=("all", "auto", *SOURCE_ORDER), default="all")
     args = parser.parse_args()
     app = QCoreApplication([])
     modes = SOURCE_ORDER if args.source == "all" else (args.source,)
     results = {"prices": {mode: {} for mode in modes}, "icons": None}
     with tempfile.TemporaryDirectory(prefix="crypto-widget-network-") as cache:
-        clients = {mode: MarketClient(cache, source=mode) for mode in modes}
+        clients = {mode: MarketClient(cache, source=mode, streaming=False) for mode in modes}
         def finished():
             if all(len(prices) == 3 for prices in results["prices"].values()) and results["icons"] is not None:
                 app.quit()

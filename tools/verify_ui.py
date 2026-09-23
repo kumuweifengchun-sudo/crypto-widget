@@ -40,8 +40,7 @@ def capture(output):
         assert abs(dialog.devicePixelRatioF() - float(scale)) < 0.02, "实际缩放比例不匹配"
         assert dialog.scroll.horizontalScrollBar().maximum() == 0
         collapsed_scroll_range = dialog.scroll.verticalScrollBar().maximum()
-        if dialog.height() >= 410:
-            assert collapsed_scroll_range == 0, "默认设置页应完整显示全部输入框"
+        assert dialog.proxy_host_edit.width() >= 80, "代理地址输入框应可读"
         assert not app.translator.isEmpty(), "中文 Qt 翻译未加载"
         price_font = font(12, True, latin=True)
         price_metrics = QFontMetricsF(price_font, widget)

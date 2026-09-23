@@ -55,6 +55,12 @@ class Manager:
         self.requests = []
         self.replies = []
 
+    def setProxy(self, proxy):
+        self.proxy = proxy
+
+    def clearConnectionCache(self):
+        pass
+
     def get(self, request):
         self.requests.append(request)
         reply = Reply()
@@ -64,7 +70,7 @@ class Manager:
 
 @pytest.fixture
 def client(app, tmp_path):
-    instance = MarketClient(tmp_path, manager=Manager(), source="binance")
+    instance = MarketClient(tmp_path, manager=Manager(), source="binance", streaming=False)
     yield instance
     instance.close()
 
@@ -181,8 +187,8 @@ def test_auto_fallback_deduplicates_full_chain_and_reports_actual_source(client)
     assert len(client.manager.requests) == 2
     assert results == []
     client.manager.replies[1].complete(b'{"code":"51001","data":[]}')
-    assert "category=spot" in client.manager.requests[2].url().toString()
-    client.manager.replies[2].complete(b'{"retCode":0,"result":{"category":"spot","list":[{"symbol":"BTCUSDT","lastPrice":"99"}]}}')
+    assert "category=linear" in client.manager.requests[2].url().toString()
+    client.manager.replies[2].complete(b'{"retCode":0,"result":{"category":"linear","list":[{"symbol":"BTCUSDT","lastPrice":"99"}]}}')
     assert results == [("BTCUSDT", Decimal("99"), "", "bybit")]
     assert not client.pending and not client.price_jobs
     client.refresh_prices(["BTCUSDT"])
@@ -214,7 +220,7 @@ def test_manual_source_change_cancels_fallback_and_ignores_late_reply(client):
     client.set_source("bybit")
     assert old.aborted and not client.price_jobs
     client.refresh_prices(["BTCUSDT"])
-    old.complete(b'{"code":"0","data":[{"instId":"BTC-USDT","instType":"SPOT","last":"88"}]}')
+    old.complete(b'{"code":"0","data":[{"instId":"BTC-USDT-SWAP","instType":"SWAP","last":"88"}]}')
     assert results == []
     client.manager.replies[2].complete(status=500)
     assert len(client.manager.requests) == 3  # 固定模式不会访问其他源。
@@ -228,5 +234,39 @@ def test_auto_jobs_are_independent_per_symbol(client):
     client.refresh_prices(["BTCUSDT", "ETHUSDT"])
     client.manager.replies[0].complete(status=429)
     client.manager.replies[1].complete(b'{"symbol":"ETHUSDT","price":"2000"}')
-    client.manager.replies[2].complete(b'{"code":"0","data":[{"instId":"BTC-USDT","instType":"SPOT","last":"88"}]}')
+    client.manager.replies[2].complete(b'{"code":"0","data":[{"instId":"BTC-USDT-SWAP","instType":"SWAP","last":"88"}]}')
     assert [(row[0], row[3]) for row in results] == [("ETHUSDT", "binance"), ("BTCUSDT", "okx")]
+
+
+def test_proxy_change_cancels_both_request_types_and_ignores_old_results(client):
+    from PyQt6.QtNetwork import QNetworkProxy
+    assert client.manager.proxy.type() == QNetworkProxy.ProxyType.Socks5Proxy
+    assert client.manager.proxy.hostName() == "127.0.0.1"
+    assert client.manager.proxy.port() == 7897
+    results = []
+    client.price_ready.connect(lambda *args: results.append(args))
+    client.refresh_prices(["BTCUSDT"])
+    client.reload_icons(["BTCUSDT"])
+    old = client.manager.replies.copy()
+    client.set_proxy({"proxy_type": "http", "proxy_host": "localhost", "proxy_port": 8080})
+    assert all(reply.aborted for reply in old)
+    assert not client.pending and not client.price_jobs
+    assert client.manager.proxy.type() == QNetworkProxy.ProxyType.HttpProxy
+    assert client.manager.proxy.port() == 8080
+    client.refresh_prices(["BTCUSDT"])
+    for reply in old:
+        reply.complete()
+    assert not results
+    client.manager.replies[-1].complete()
+    assert len(results) == 1
+    client.set_proxy({"proxy_enabled": False})
+    assert client.manager.proxy.type() == QNetworkProxy.ProxyType.NoProxy
+
+
+def test_real_qt_manager_applies_proxy(app, tmp_path):
+    from PyQt6.QtNetwork import QNetworkProxy
+    client = MarketClient(tmp_path)
+    assert client.manager.proxy().type() == QNetworkProxy.ProxyType.Socks5Proxy
+    client.set_proxy({"proxy_enabled": False})
+    assert client.manager.proxy().type() == QNetworkProxy.ProxyType.NoProxy
+    client.close()

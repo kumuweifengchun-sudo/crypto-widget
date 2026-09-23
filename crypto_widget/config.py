@@ -1,6 +1,7 @@
 """配置兼容、校验与原子保存；导入模块不会改动用户文件。"""
 
 import json
+import ipaddress
 import math
 import os
 from pathlib import Path
@@ -19,13 +20,35 @@ DEFAULT_CONFIG = {
     "cycle_interval": 3, "cycle_enabled": True, "mini_mode": True, "pos_x": 200, "pos_y": 200,
     "hide_hotkey": "Alt+Z",
     "price_source": "auto",
+    "proxy_enabled": True, "proxy_type": "socks5", "proxy_host": "127.0.0.1", "proxy_port": 7897,
 }
+PROXY_LABELS = {"socks5": "SOCKS5", "http": "HTTP"}
 SOURCE_LABELS = {"auto": "自动（三源）", "binance": "币安（Binance）", "okx": "欧易（OKX）", "bybit": "Bybit"}
 LIMITS = {
     "text_size": (8, 64), "bg_opacity": (0, 1), "update_interval": (5, 300),
     "cycle_interval": (3, 60), "pos_x": (-100000, 100000), "pos_y": (-100000, 100000),
     **{f"decimals{i}": (0, 8) for i in range(1, 4)},
 }
+
+
+def normalize_proxy_host(value):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("请输入代理主机地址，例如 127.0.0.1；不要包含协议或端口。")
+    value = value.strip()
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        pass
+    try:
+        hostname = value.encode("idna").decode("ascii")
+    except UnicodeError:
+        raise ValueError("代理主机地址无效。") from None
+    if len(hostname) > 253 or not all(
+        re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", part)
+        for part in hostname.rstrip(".").split(".")
+    ):
+        raise ValueError("代理主机地址无效，请仅填写 IP 地址或主机名。")
+    return hostname
 
 
 def normalize_symbol(value):
@@ -63,10 +86,18 @@ def validate_config(raw):
                 value = normalize_symbol(value)
             elif key == "hide_hotkey":
                 value = normalize_hotkey(value)
+            elif key == "proxy_host":
+                value = normalize_proxy_host(value)
+            elif key == "proxy_type":
+                if not isinstance(value, str) or value not in PROXY_LABELS:
+                    raise ValueError()
+            elif key == "proxy_port":
+                if type(value) is not int or not 1 <= value <= 65535:
+                    raise ValueError()
             elif key == "price_source":
                 if not isinstance(value, str) or value not in SOURCE_LABELS:
                     raise ValueError()
-            elif key in ("cycle_enabled", "mini_mode"):
+            elif key in ("cycle_enabled", "mini_mode", "proxy_enabled"):
                 if type(value) is not bool:
                     raise ValueError()
             else:
