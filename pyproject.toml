@@ -1,0 +1,22 @@
+[project]
+name = "crypto-widget"
+version = "2.0.0"
+description = "简洁的中文桌面加密货币行情组件"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = ["PyQt6>=6.8,<7"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10"]
+build = ["pyinstaller>=6.11,<7"]
+
+[tool.uv]
+default-groups = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[[tool.uv.index]]
+url="https://mirrors.cloud.tencent.com/pypi/simple/"
+default=true
